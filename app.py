@@ -39,6 +39,13 @@ def create_app() -> gr.Blocks:
     # 外部サービスの稼働状態を確認
     voicevox_available: bool = tts.is_available()
 
+    # 音声モデルを起動時にプリロード（UIブロック回避）
+    logger.info("VAD モデルをロード中...")
+    vad.load_model()
+    logger.info("Whisper モデルをロード中 (%s)...", settings.whisper_model)
+    stt.load_model()
+    logger.info("モデルのロード完了 — 起動準備OK")
+
     # 音声パイプライン用キュー（AudioRecorderコールバック → メインスレッド）
     speech_queue: queue.Queue[np.ndarray] = queue.Queue()
 
@@ -48,7 +55,6 @@ def create_app() -> gr.Blocks:
 
     def start_mic() -> str:
         """マイク録音を開始する."""
-        # モデルロード（初回のみ）
         if not vad.is_available():
             return "VADモデルのロードに失敗"
         if not stt.is_available():
