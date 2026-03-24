@@ -1,12 +1,15 @@
 # VoiceChatAIAssistant
 
 ## プロジェクト概要
-- エンジン/フレームワーク: 
+- エンジン/フレームワーク: Python 3.10+ / Gradio / google-genai / VOICEVOX
 - リポジトリ: https://github.com/kaiman2110/VoiceChatAIAssistant
-- テスト: (未設定) (`echo 'テストコマンド未設定'`)
+- テスト: `.venv/Scripts/pytest tests/ -v`
 
 ## アーキテクチャ原則
-<!-- プロジェクト固有の原則を記載。例: EventBus 経由の疎結合通信 -->
+- パイプライン構成: マイク → VAD → Whisper → LLM → VOICEVOX → スピーカー
+- 各コンポーネントは `core/` 配下に独立クラスとして実装
+- VOICEVOX未起動時はテキストのみで動作（グレースフルデグレード）
+- 設定は `config.py` (pydantic-settings) で一元管理
 
 ## 既知の落とし穴
 <!-- 詳細は references/gotchas.md に記載。頻出のみここに残す -->
