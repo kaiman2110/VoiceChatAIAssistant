@@ -212,6 +212,32 @@ class TestAudioRecorder:
         assert mock_input_stream.call_count == 1
 
     @pytest.mark.unit
+    def test_on_audio_chunk_callback(self) -> None:
+        """各チャンクで on_audio_chunk コールバックが呼ばれる."""
+        vad = VADDetector(threshold=0.5)
+        mock_model = MagicMock()
+        vad._model = mock_model
+        recorder = AudioRecorder(vad)
+        chunk_callback = MagicMock()
+        recorder._on_speech_end = MagicMock()
+        recorder._on_audio_chunk = chunk_callback
+        recorder._recording = True
+
+        with patch("core.audio.torch") as mock_torch:
+            mock_tensor = MagicMock()
+            mock_torch.from_numpy.return_value.float.return_value = mock_tensor
+            mock_tensor.dim.return_value = 1
+            mock_model.return_value.item.return_value = 0.1
+
+            indata = np.ones((512, 1), dtype=np.float32) * 0.1
+            recorder._audio_callback(indata, 512, None, MagicMock(spec=False))
+
+            chunk_callback.assert_called_once()
+            chunk_data = chunk_callback.call_args[0][0]
+            assert isinstance(chunk_data, np.ndarray)
+            assert len(chunk_data) == 512
+
+    @pytest.mark.unit
     def test_audio_callback_collects_speech(self) -> None:
         """発話中の音声データがバッファに蓄積される."""
         vad = VADDetector(threshold=0.5)
