@@ -5,9 +5,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from config import Settings
-from core.llm import ChatHistory, GeminiClient
+from core.llm import ChatHistory, GeminiClient, OllamaClient
 
 
 class TestChatHistory:
@@ -215,3 +216,118 @@ class TestGeminiClient:
         second_call = mock_client.models.generate_content.call_args_list[1]
         contents = second_call.kwargs["contents"]
         assert len(contents) == 3  # user1, model1, user2
+
+
+class TestOllamaClient:
+    """OllamaClient クラスのテスト."""
+
+    @pytest.mark.unit
+    @patch("core.llm.requests.get")
+    def test_is_available_success(
+        self, mock_get: MagicMock, settings: Settings
+    ) -> None:
+        """Ollama サーバー稼働中は True を返す."""
+        mock_get.return_value = MagicMock(status_code=200)
+        client = OllamaClient(settings)
+        assert client.is_available() is True
+
+    @pytest.mark.unit
+    @patch("core.llm.requests.get")
+    def test_is_available_connection_error(
+        self, mock_get: MagicMock, settings: Settings
+    ) -> None:
+        """接続エラー時は False を返す."""
+        mock_get.side_effect = requests.ConnectionError()
+        client = OllamaClient(settings)
+        assert client.is_available() is False
+
+    @pytest.mark.unit
+    @patch("core.llm.requests.get")
+    def test_is_available_timeout(
+        self, mock_get: MagicMock, settings: Settings
+    ) -> None:
+        """タイムアウト時は False を返す."""
+        mock_get.side_effect = requests.Timeout()
+        client = OllamaClient(settings)
+        assert client.is_available() is False
+
+    @pytest.mark.unit
+    @patch("core.llm.requests.post")
+    def test_generate(
+        self, mock_post: MagicMock, settings: Settings
+    ) -> None:
+        """Ollama REST API 経由で応答を生成できる."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "message": {"content": "こんにちはなのだ！"},
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        client = OllamaClient(settings)
+        result = client.generate("こんにちは")
+
+        assert result == "こんにちはなのだ！"
+        mock_post.assert_called_once()
+
+        # 履歴に追加されている
+        assert len(client.history.messages) == 2
+        assert client.history.messages[0]["role"] == "user"
+        assert client.history.messages[1]["role"] == "model"
+
+    @pytest.mark.unit
+    @patch("core.llm.requests.post")
+    def test_generate_stream(
+        self, mock_post: MagicMock, settings: Settings
+    ) -> None:
+        """ストリーミング応答を文単位で取得できる."""
+        lines = [
+            '{"message":{"content":"これは最初の文"}}',
+            '{"message":{"content":"。次の文なの"}}',
+            '{"message":{"content":"だ。最後"}}',
+        ]
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.iter_lines.return_value = lines
+        mock_post.return_value = mock_resp
+
+        client = OllamaClient(settings)
+        sentences = list(client.generate_stream("テスト"))
+
+        assert sentences == ["これは最初の文。", "次の文なのだ。", "最後"]
+
+        # 履歴にフルテキストが追加されている
+        assert len(client.history.messages) == 2
+        full_text = client.history.messages[1]["parts"][0]["text"]
+        assert full_text == "これは最初の文。次の文なのだ。最後"
+
+    @pytest.mark.unit
+    @patch("core.llm.requests.post")
+    def test_model_name(
+        self, mock_post: MagicMock, settings: Settings
+    ) -> None:
+        """モデル名を取得できる."""
+        client = OllamaClient(settings)
+        assert client.model_name == "ollama/gemma3"
+
+    @pytest.mark.unit
+    @patch("core.llm.requests.post")
+    def test_set_system_prompt(
+        self, mock_post: MagicMock, settings: Settings
+    ) -> None:
+        """システムプロンプトを変更できる."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "message": {"content": "応答"},
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        client = OllamaClient(settings)
+        client.set_system_prompt("カスタムプロンプト")
+        client.generate("テスト")
+
+        call_args = mock_post.call_args
+        messages = call_args.kwargs["json"]["messages"]
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == "カスタムプロンプト"
