@@ -45,6 +45,22 @@ class Settings(BaseSettings):
         description="カスタムWake Wordモデルのパス",
     )
 
+    # VAD (Voice Activity Detection)
+    vad_threshold: float = Field(
+        default=0.5,
+        description="VAD音声判定の閾値 (0.0-1.0)",
+    )
+    vad_silence_duration_ms: int = Field(
+        default=1000,
+        description="発話終了と判定する無音継続時間 (ミリ秒)",
+    )
+
+    # Audio
+    audio_sample_rate: int = Field(
+        default=16000,
+        description="音声サンプリングレート (Hz)",
+    )
+
     # アプリケーション設定
     max_chat_history: int = Field(
         default=10,
