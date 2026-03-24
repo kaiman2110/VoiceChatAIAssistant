@@ -1,0 +1,12 @@
+[project]
+name = "voice-chat-ai-assistant"
+version = "0.1.0"
+description = "作業中の雑談・壁打ち・設計相談を音声で行えるAIアシスタント"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: ユニットテスト（モック使用、外部依存なし）",
+    "integration: 統合テスト（VOICEVOX等の外部サービスが必要）",
+]

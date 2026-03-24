@@ -1,0 +1,28 @@
+# UI
+gradio>=4.0,<5.0
+
+# 設定管理
+pydantic>=2.0,<3.0
+pydantic-settings>=2.0,<3.0
+
+# 音声認識 (STT)
+faster-whisper>=1.0,<2.0
+
+# 発話区間検出 (VAD)
+torch>=2.0
+silero-vad>=5.0,<6.0
+
+# マイク入力・音声再生
+sounddevice>=0.4,<1.0
+numpy>=1.24,<3.0
+
+# LLM
+google-genai>=1.0,<2.0
+requests>=2.28,<3.0
+
+# Wake Word
+openwakeword>=0.6,<1.0
+
+# テスト
+pytest>=8.0,<9.0
+pytest-mock>=3.0,<4.0
