@@ -16,6 +16,7 @@ from core.llm import LLMManager
 from core.logger import ConversationLogger
 from core.stt import WhisperSTT
 from core.tts import VoicevoxTTS
+from core.wakeword import WakeWordDetector
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,10 @@ def create_app() -> gr.Blocks:
         chunk_size=512,
     )
 
+    wakeword = WakeWordDetector(
+        wakeword_model=settings.wakeword_model,
+    )
+
     # 会話ログ
     conv_logger = ConversationLogger(
         llm_name=llm.model_name,
@@ -53,27 +58,67 @@ def create_app() -> gr.Blocks:
     stt.load_model()
     logger.info("モデルのロード完了 — 起動準備OK")
 
+    # リスニングモード状態管理
+    listening_mode: dict[str, str] = {"current": "ミュート"}
+    wakeword_gate: dict[str, bool] = {"open": False}
+
     # 音声パイプライン用キュー（AudioRecorderコールバック → メインスレッド）
     speech_queue: queue.Queue[np.ndarray] = queue.Queue()
 
     def on_speech_end(audio_data: np.ndarray) -> None:
         """AudioRecorder コールバック: 発話終了時にキューに投入."""
-        speech_queue.put(audio_data)
+        mode = listening_mode["current"]
+        if mode == "常時リスニング":
+            speech_queue.put(audio_data)
+        elif mode == "Wake Word" and wakeword_gate["open"]:
+            speech_queue.put(audio_data)
+            wakeword_gate["open"] = False
+            logger.info("Wake Word ゲートを閉じました")
 
-    def start_mic() -> str:
-        """マイク録音を開始する."""
+    def on_audio_chunk(chunk: np.ndarray) -> None:
+        """AudioRecorder コールバック: 各チャンクで Wake Word 検知."""
+        if listening_mode["current"] != "Wake Word":
+            return
+        if wakeword_gate["open"]:
+            return
+        try:
+            if wakeword.detect(chunk):
+                wakeword_gate["open"] = True
+                logger.info("Wake Word ゲートを開きました")
+        except Exception:
+            pass
+
+    def change_listening_mode(selected: str) -> str:
+        """リスニングモードを切り替える."""
+        listening_mode["current"] = selected
+        wakeword_gate["open"] = False
+
+        if selected == "ミュート":
+            recorder.stop()
+            return "ミュート中"
+
+        # VAD/STT チェック
         if not vad.is_available():
             return "VADモデルのロードに失敗"
         if not stt.is_available():
             return "Whisperモデルのロードに失敗"
 
-        recorder.start(on_speech_end=on_speech_end)
-        return "🔴 聴取中..."
+        # Wake Word モードのモデルチェック
+        if selected == "Wake Word":
+            if not wakeword.is_available():
+                listening_mode["current"] = "ミュート"
+                return "Wake Wordモデルのロードに失敗"
 
-    def stop_mic() -> str:
-        """マイク録音を停止する."""
-        recorder.stop()
-        return "待機中"
+        # 録音中なら一旦停止して再開
+        if recorder.is_recording:
+            recorder.stop()
+
+        chunk_cb = on_audio_chunk if selected == "Wake Word" else None
+        recorder.start(on_speech_end=on_speech_end, on_audio_chunk=chunk_cb)
+
+        if selected == "Wake Word":
+            return "Wake Word 待機中..."
+        return "🔴 聴取中..."
 
     def process_speech(
         history: list[dict[str, Any]],
@@ -211,12 +256,7 @@ def create_app() -> gr.Blocks:
                     type="messages",
                 )
 
-                # マイク制御
-                with gr.Row():
-                    mic_start_btn = gr.Button(
-                        "🎙️ マイク ON", scale=2, variant="primary",
-                    )
-                    mic_stop_btn = gr.Button("⏹️ マイク OFF", scale=2)
+                # テキスト入力（マイク制御はリスニングモードRadioに移行）
 
                 # テキスト入力
                 with gr.Row():
@@ -230,6 +270,11 @@ def create_app() -> gr.Blocks:
                 clear_btn = gr.Button("クリア")
 
             with gr.Column(scale=1):
+                listening_radio = gr.Radio(
+                    choices=["ミュート", "常時リスニング", "Wake Word"],
+                    value="ミュート",
+                    label="リスニングモード",
+                )
                 mode_radio = gr.Radio(
                     choices=["雑談", "コード相談", "進捗報告"],
                     value="雑談",
@@ -253,13 +298,10 @@ def create_app() -> gr.Blocks:
 
         # --- イベントハンドラー ---
 
-        # マイク制御
-        mic_start_btn.click(
-            fn=start_mic,
-            outputs=[mic_status],
-        )
-        mic_stop_btn.click(
-            fn=stop_mic,
+        # リスニングモード切替
+        listening_radio.change(
+            fn=change_listening_mode,
+            inputs=[listening_radio],
             outputs=[mic_status],
         )
 

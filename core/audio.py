@@ -120,6 +120,7 @@ class AudioRecorder:
         self._recording: bool = False
         self._audio_buffer: list[np.ndarray] = []
         self._on_speech_end: Callable[[np.ndarray], None] | None = None
+        self._on_audio_chunk: Callable[[np.ndarray], None] | None = None
         self._lock: threading.Lock = threading.Lock()
 
     @property
@@ -127,17 +128,24 @@ class AudioRecorder:
         """録音中かどうか."""
         return self._recording
 
-    def start(self, on_speech_end: Callable[[np.ndarray], None]) -> None:
+    def start(
+        self,
+        on_speech_end: Callable[[np.ndarray], None],
+        on_audio_chunk: Callable[[np.ndarray], None] | None = None,
+    ) -> None:
         """マイク録音を開始する.
 
         Args:
             on_speech_end: 発話終了時に呼ばれるコールバック。
                           引数は発話区間の音声データ (numpy array, float32)。
+            on_audio_chunk: 各オーディオチャンク受信時のコールバック（オプション）。
+                           Wake Word 検知などに使用。
         """
         if self._recording:
             return
 
         self._on_speech_end = on_speech_end
+        self._on_audio_chunk = on_audio_chunk
         self._audio_buffer = []
         self._vad.reset()
 
@@ -176,6 +184,10 @@ class AudioRecorder:
             logger.warning("Audio callback status: %s", status)
 
         chunk: np.ndarray = indata[:, 0].copy()
+
+        if self._on_audio_chunk is not None:
+            self._on_audio_chunk(chunk)
+
         result: dict[str, bool] = self._vad.process_chunk(chunk)
 
         with self._lock:
