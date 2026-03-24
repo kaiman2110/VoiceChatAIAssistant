@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/*.md
+
+# Models
+models/wakeword/*.onnx
+models/wakeword/*.tflite
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Claude Code
+.claude/
