@@ -8,7 +8,7 @@ import pytest
 import requests
 
 from config import Settings
-from core.llm import ChatHistory, GeminiClient, OllamaClient
+from core.llm import ChatHistory, GeminiClient, LLMManager, OllamaClient
 
 
 class TestChatHistory:
@@ -331,3 +331,153 @@ class TestOllamaClient:
         messages = call_args.kwargs["json"]["messages"]
         assert messages[0]["role"] == "system"
         assert messages[0]["content"] == "カスタムプロンプト"
+
+
+class TestLLMManager:
+    """LLMManager クラスのテスト."""
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_uses_gemini_when_api_key_set(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """APIキー設定時は Gemini を使用する."""
+        mock_client_cls.return_value = MagicMock()
+        manager = LLMManager(settings)
+        assert manager.model_name == "gemini-2.5-flash"
+
+    @pytest.mark.unit
+    def test_uses_ollama_when_no_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """APIキー未設定時は Ollama を使用する."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        s = Settings(_env_file=None)
+        manager = LLMManager(s)
+        assert manager.model_name == "ollama/gemma3"
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_generate_delegates_to_active(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """generate は アクティブクライアントに委譲する."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "応答なのだ"
+        mock_client.models.generate_content.return_value = mock_response
+
+        manager = LLMManager(settings)
+        result = manager.generate("テスト")
+
+        assert result == "応答なのだ"
+
+    @pytest.mark.unit
+    @patch("core.llm.requests.post")
+    @patch("core.llm.genai.Client")
+    def test_fallback_on_gemini_error(
+        self,
+        mock_gemini_cls: MagicMock,
+        mock_post: MagicMock,
+        settings: Settings,
+    ) -> None:
+        """Gemini エラー時に Ollama へ自動フォールバックする."""
+        # Gemini: エラー発生
+        mock_gemini = MagicMock()
+        mock_gemini_cls.return_value = mock_gemini
+        mock_gemini.models.generate_content.side_effect = Exception(
+            "429 Too Many Requests"
+        )
+
+        # Ollama: 成功
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "message": {"content": "Ollamaからの応答なのだ"},
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        manager = LLMManager(settings)
+        result = manager.generate("テスト")
+
+        assert result == "Ollamaからの応答なのだ"
+        assert manager.model_name == "ollama/gemma3"
+
+    @pytest.mark.unit
+    @patch("core.llm.requests.post")
+    @patch("core.llm.genai.Client")
+    def test_fallback_stream_on_gemini_error(
+        self,
+        mock_gemini_cls: MagicMock,
+        mock_post: MagicMock,
+        settings: Settings,
+    ) -> None:
+        """Gemini ストリーミングエラー時に Ollama へフォールバック."""
+        mock_gemini = MagicMock()
+        mock_gemini_cls.return_value = mock_gemini
+        mock_gemini.models.generate_content_stream.side_effect = Exception(
+            "429 Too Many Requests"
+        )
+
+        # Ollama ストリーミング
+        lines = ['{"message":{"content":"フォールバック応答。"}}']
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.iter_lines.return_value = lines
+        mock_post.return_value = mock_resp
+
+        manager = LLMManager(settings)
+        sentences = list(manager.generate_stream("テスト"))
+
+        assert sentences == ["フォールバック応答。"]
+
+    @pytest.mark.unit
+    def test_ollama_error_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ollama がアクティブ時のエラーは再送出される."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        s = Settings(_env_file=None)
+        manager = LLMManager(s)
+
+        with patch("core.llm.requests.post") as mock_post:
+            mock_post.side_effect = requests.ConnectionError("接続失敗")
+            with pytest.raises(requests.ConnectionError):
+                manager.generate("テスト")
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_history_returns_active_history(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """history は アクティブクライアントの履歴を返す."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "応答"
+        mock_client.models.generate_content.return_value = mock_response
+
+        manager = LLMManager(settings)
+        manager.generate("テスト")
+
+        assert len(manager.history.messages) == 2
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_set_system_prompt_applies_to_active(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """set_system_prompt はアクティブクライアントに適用される."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "応答"
+        mock_client.models.generate_content.return_value = mock_response
+
+        manager = LLMManager(settings)
+        manager.set_system_prompt("カスタム")
+        manager.generate("テスト")
+
+        call_kwargs = mock_client.models.generate_content.call_args
+        assert call_kwargs.kwargs["config"]["system_instruction"] == "カスタム"
