@@ -13,6 +13,7 @@ import numpy as np
 from config import Settings
 from core.audio import AudioRecorder, VADDetector
 from core.llm import LLMManager
+from core.logger import ConversationLogger
 from core.stt import WhisperSTT
 from core.tts import VoicevoxTTS
 
@@ -34,6 +35,12 @@ def create_app() -> gr.Blocks:
         vad,
         sample_rate=settings.audio_sample_rate,
         chunk_size=512,
+    )
+
+    # 会話ログ
+    conv_logger = ConversationLogger(
+        llm_name=llm.model_name,
+        character="ずんだもん",
     )
 
     # 外部サービスの稼働状態を確認
@@ -88,6 +95,7 @@ def create_app() -> gr.Blocks:
 
         # ユーザーメッセージを履歴に追加
         history.append({"role": "user", "content": text})
+        conv_logger.add_entry("user", text)
 
         # LLM応答生成（ストリーミング → 文単位で収集）
         try:
@@ -98,6 +106,8 @@ def create_app() -> gr.Blocks:
             sentences = []
 
         history.append({"role": "assistant", "content": response})
+        conv_logger.add_entry("assistant", response)
+        conv_logger.set_llm_name(llm.model_name)
 
         # TTS再生（バックグラウンド・文単位並列合成）
         tts_status: str = "応答完了"
@@ -126,6 +136,7 @@ def create_app() -> gr.Blocks:
             return history, "", f"LLM: {llm.model_name}"
 
         history.append({"role": "user", "content": message})
+        conv_logger.add_entry("user", message)
 
         # LLM応答生成（ストリーミング → 文単位で収集）
         try:
@@ -136,6 +147,8 @@ def create_app() -> gr.Blocks:
             sentences = []
 
         history.append({"role": "assistant", "content": response})
+        conv_logger.add_entry("assistant", response)
+        conv_logger.set_llm_name(llm.model_name)
 
         # TTS再生（バックグラウンド・文単位並列合成）
         tts_status: str = ""
@@ -158,7 +171,8 @@ def create_app() -> gr.Blocks:
         return history, tts_status, f"LLM: {llm.model_name}"
 
     def clear_chat() -> tuple[list[Any], str, str]:
-        """チャット履歴をクリア."""
+        """チャット履歴をクリア（ログ保存後）."""
+        conv_logger.save_and_reset()
         llm.history.clear()
         return [], "", f"LLM: {llm.model_name}"
 
