@@ -32,6 +32,10 @@ class Settings(BaseSettings):
         default="http://localhost:11434",
         description="Ollamaのホスト",
     )
+    ollama_model: str = Field(
+        default="gemma3",
+        description="Ollamaで使用するモデル名",
+    )
 
     # Whisper
     whisper_model: str = Field(

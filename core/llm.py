@@ -1,15 +1,28 @@
-"""LLMクライアント（Gemini API連携）."""
+"""LLMクライアント（Gemini API / Ollama連携）."""
 
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import requests
 from google import genai
 from google.genai.types import GenerateContentResponse
 
 from config import Settings, BASE_DIR
+
+logger = logging.getLogger(__name__)
+
+
+def _load_prompt(filename: str) -> str:
+    """prompts/ からプロンプトファイルを読み込む."""
+    prompt_path: Path = BASE_DIR / "prompts" / filename
+    if prompt_path.exists():
+        return prompt_path.read_text(encoding="utf-8")
+    return ""
 
 
 class ChatHistory:
@@ -58,7 +71,7 @@ class GeminiClient:
         self._history: ChatHistory = ChatHistory(
             max_turns=settings.max_chat_history,
         )
-        self._system_prompt: str = self._load_prompt("casual.txt")
+        self._system_prompt: str = _load_prompt("casual.txt")
 
     @property
     def history(self) -> ChatHistory:
@@ -76,7 +89,7 @@ class GeminiClient:
 
     def load_prompt_file(self, filename: str) -> None:
         """prompts/ ディレクトリからプロンプトファイルを読み込んで設定."""
-        self._system_prompt = self._load_prompt(filename)
+        self._system_prompt = _load_prompt(filename)
 
     def generate(self, user_message: str) -> str:
         """ユーザーメッセージに対する応答を生成."""
@@ -130,10 +143,197 @@ class GeminiClient:
 
         self._history.add_assistant(full_text)
 
-    @staticmethod
-    def _load_prompt(filename: str) -> str:
-        """prompts/ からプロンプトファイルを読み込む."""
-        prompt_path: Path = BASE_DIR / "prompts" / filename
-        if prompt_path.exists():
-            return prompt_path.read_text(encoding="utf-8")
-        return ""
+
+class OllamaClient:
+    """Ollama REST API クライアント."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._host: str = settings.ollama_host
+        self._model: str = settings.ollama_model
+        self._history: ChatHistory = ChatHistory(
+            max_turns=settings.max_chat_history,
+        )
+        self._system_prompt: str = _load_prompt("casual.txt")
+
+    @property
+    def history(self) -> ChatHistory:
+        """会話履歴を返す."""
+        return self._history
+
+    @property
+    def model_name(self) -> str:
+        """現在のモデル名を返す."""
+        return f"ollama/{self._model}"
+
+    def is_available(self) -> bool:
+        """Ollama サーバーが稼働中か確認."""
+        try:
+            resp = requests.get(f"{self._host}/api/tags", timeout=2)
+            return resp.status_code == 200
+        except (requests.ConnectionError, requests.Timeout):
+            return False
+
+    def set_system_prompt(self, prompt: str) -> None:
+        """システムプロンプトを設定."""
+        self._system_prompt = prompt
+
+    def load_prompt_file(self, filename: str) -> None:
+        """prompts/ ディレクトリからプロンプトファイルを読み込んで設定."""
+        self._system_prompt = _load_prompt(filename)
+
+    def _build_messages(self) -> list[dict[str, str]]:
+        """ChatHistory を Ollama 形式のメッセージリストに変換."""
+        messages: list[dict[str, str]] = []
+        if self._system_prompt:
+            messages.append({"role": "system", "content": self._system_prompt})
+        for msg in self._history.messages:
+            role = "assistant" if msg["role"] == "model" else msg["role"]
+            text = msg["parts"][0]["text"]
+            messages.append({"role": role, "content": text})
+        return messages
+
+    def generate(self, user_message: str) -> str:
+        """ユーザーメッセージに対する応答を生成."""
+        self._history.add_user(user_message)
+
+        resp = requests.post(
+            f"{self._host}/api/chat",
+            json={
+                "model": self._model,
+                "messages": self._build_messages(),
+                "stream": False,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+
+        assistant_text: str = resp.json()["message"]["content"]
+        self._history.add_assistant(assistant_text)
+        return assistant_text
+
+    def generate_stream(self, user_message: str) -> Iterator[str]:
+        """ユーザーメッセージに対する応答をストリーミングで生成.
+
+        句点（。）で区切って文単位で yield する。
+        """
+        self._history.add_user(user_message)
+
+        resp = requests.post(
+            f"{self._host}/api/chat",
+            json={
+                "model": self._model,
+                "messages": self._build_messages(),
+                "stream": True,
+            },
+            stream=True,
+            timeout=60,
+        )
+        resp.raise_for_status()
+
+        full_text: str = ""
+        buffer: str = ""
+
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            data = json.loads(line)
+            chunk_text: str = data.get("message", {}).get("content", "")
+            buffer += chunk_text
+            full_text += chunk_text
+
+            while "。" in buffer:
+                sentence, buffer = buffer.split("。", 1)
+                yield sentence + "。"
+
+        if buffer.strip():
+            yield buffer
+
+        self._history.add_assistant(full_text)
+
+
+class LLMManager:
+    """LLMクライアント管理（Gemini優先、Ollama自動フォールバック）."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings: Settings = settings
+        self._gemini: GeminiClient | None = None
+        self._ollama: OllamaClient | None = None
+        self._active: GeminiClient | OllamaClient
+
+        # Gemini API キーがあれば Gemini を優先
+        if settings.gemini_api_key:
+            self._gemini = GeminiClient(settings)
+            self._active = self._gemini
+        else:
+            logger.warning("Gemini APIキー未設定 → Ollamaを使用")
+            self._ollama = OllamaClient(settings)
+            self._active = self._ollama
+
+    @property
+    def history(self) -> ChatHistory:
+        """現在アクティブなクライアントの会話履歴を返す."""
+        return self._active.history
+
+    @property
+    def model_name(self) -> str:
+        """現在使用中のモデル名を返す."""
+        return self._active.model_name
+
+    def set_system_prompt(self, prompt: str) -> None:
+        """全クライアントのシステムプロンプトを設定."""
+        if self._gemini:
+            self._gemini.set_system_prompt(prompt)
+        if self._ollama:
+            self._ollama.set_system_prompt(prompt)
+
+    def load_prompt_file(self, filename: str) -> None:
+        """全クライアントのプロンプトファイルを読み込んで設定."""
+        if self._gemini:
+            self._gemini.load_prompt_file(filename)
+        if self._ollama:
+            self._ollama.load_prompt_file(filename)
+
+    def generate(self, user_message: str) -> str:
+        """応答を生成（エラー時はフォールバック）."""
+        try:
+            return self._active.generate(user_message)
+        except Exception as e:
+            fallback = self._try_fallback(e)
+            if fallback is None:
+                raise
+            return fallback.generate(user_message)
+
+    def generate_stream(self, user_message: str) -> Iterator[str]:
+        """ストリーミング応答を生成（エラー時はフォールバック）."""
+        try:
+            yield from self._active.generate_stream(user_message)
+        except Exception as e:
+            fallback = self._try_fallback(e)
+            if fallback is None:
+                raise
+            yield from fallback.generate_stream(user_message)
+
+    def _try_fallback(
+        self, error: Exception
+    ) -> GeminiClient | OllamaClient | None:
+        """エラー時にフォールバック先を返す。切替不可なら None."""
+        if not isinstance(self._active, GeminiClient):
+            return None
+
+        logger.warning("Geminiエラー: %s → Ollamaへフォールバック", error)
+
+        if self._ollama is None:
+            self._ollama = OllamaClient(self._settings)
+            # Gemini の履歴を引き継ぐ
+            if self._gemini:
+                for msg in self._gemini.history.messages:
+                    text = msg["parts"][0]["text"]
+                    if msg["role"] == "user":
+                        self._ollama.history.add_user(text)
+                    else:
+                        self._ollama.history.add_assistant(text)
+                # システムプロンプトも引き継ぐ
+                self._ollama.set_system_prompt(self._gemini._system_prompt)
+
+        self._active = self._ollama
+        return self._ollama

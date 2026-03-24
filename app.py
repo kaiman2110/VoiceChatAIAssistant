@@ -12,7 +12,7 @@ import numpy as np
 
 from config import Settings
 from core.audio import AudioRecorder, VADDetector
-from core.llm import GeminiClient
+from core.llm import LLMManager
 from core.stt import WhisperSTT
 from core.tts import VoicevoxTTS
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 def create_app() -> gr.Blocks:
     """Gradio アプリケーションを構築して返す."""
     settings = Settings()
-    llm = GeminiClient(settings)
+    llm = LLMManager(settings)
     tts = VoicevoxTTS(host=settings.voicevox_host)
     stt = WhisperSTT(model_size=settings.whisper_model)
     vad = VADDetector(

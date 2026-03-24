@@ -14,6 +14,7 @@ class TestSettings:
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         monkeypatch.delenv("VOICEVOX_HOST", raising=False)
         monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        monkeypatch.delenv("OLLAMA_MODEL", raising=False)
         monkeypatch.delenv("WHISPER_MODEL", raising=False)
         monkeypatch.delenv("WAKEWORD_MODEL", raising=False)
 
@@ -22,6 +23,7 @@ class TestSettings:
         assert s.gemini_api_key == ""
         assert s.voicevox_host == "http://localhost:50021"
         assert s.ollama_host == "http://localhost:11434"
+        assert s.ollama_model == "gemma3"
         assert s.whisper_model == "large-v3"
         assert s.wakeword_model is None
         assert s.max_chat_history == 10
