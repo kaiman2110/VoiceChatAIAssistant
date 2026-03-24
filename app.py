@@ -170,6 +170,28 @@ def create_app() -> gr.Blocks:
 
         return history, tts_status, f"LLM: {llm.model_name}"
 
+    # モード名 → プロンプトファイル名のマッピング
+    mode_map: dict[str, str] = {
+        "雑談": "casual",
+        "コード相談": "code_review",
+        "進捗報告": "progress",
+    }
+
+    def change_mode(
+        selected: str,
+        history: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], str, str]:
+        """会話モードを切り替える（履歴クリア＋プロンプト変更）."""
+        mode_key = mode_map.get(selected, "casual")
+        llm.load_prompt_file(f"{mode_key}.txt")
+        conv_logger.set_mode(mode_key)
+
+        # モード変更時は履歴をクリア（ログ保存後）
+        conv_logger.save_and_reset()
+        llm.history.clear()
+
+        return [], f"モード: {selected}", f"LLM: {llm.model_name}"
+
     def clear_chat() -> tuple[list[Any], str, str]:
         """チャット履歴をクリア（ログ保存後）."""
         conv_logger.save_and_reset()
@@ -208,6 +230,11 @@ def create_app() -> gr.Blocks:
                 clear_btn = gr.Button("クリア")
 
             with gr.Column(scale=1):
+                mode_radio = gr.Radio(
+                    choices=["雑談", "コード相談", "進捗報告"],
+                    value="雑談",
+                    label="会話モード",
+                )
                 mic_status = gr.Textbox(
                     label="マイク",
                     value="待機中",
@@ -265,6 +292,13 @@ def create_app() -> gr.Blocks:
 
         clear_btn.click(
             fn=clear_chat,
+            outputs=[chatbot, status_display, llm_info],
+        )
+
+        # モード切替
+        mode_radio.change(
+            fn=change_mode,
+            inputs=[mode_radio, chatbot],
             outputs=[chatbot, status_display, llm_info],
         )
 
