@@ -51,6 +51,31 @@ def create_app() -> gr.Blocks:
     # 外部サービスの稼働状態を確認
     voicevox_available: bool = tts.is_available()
 
+    # キャラクター情報（speaker_id → 表示名のマッピング）
+    speaker_state: dict[str, int] = {"id": settings.default_speaker_id}
+    speaker_choices: list[str] = ["ずんだもん (id=3)"]
+    speaker_id_map: dict[str, int] = {}
+
+    if voicevox_available:
+        try:
+            speakers = tts.get_speakers()
+            speaker_choices = []
+            for sp in speakers:
+                for style in sp.get("styles", []):
+                    label = f"{sp['name']}（{style['name']}）"
+                    sid = style["id"]
+                    speaker_choices.append(label)
+                    speaker_id_map[label] = sid
+        except Exception:
+            logger.warning("VOICEVOXキャラクター一覧の取得に失敗")
+
+    # デフォルト選択の決定
+    default_speaker_label = speaker_choices[0]
+    for label, sid in speaker_id_map.items():
+        if sid == settings.default_speaker_id:
+            default_speaker_label = label
+            break
+
     # 音声モデルを起動時にプリロード（UIブロック回避）
     logger.info("VAD モデルをロード中...")
     vad.load_model()
@@ -163,7 +188,7 @@ def create_app() -> gr.Blocks:
                 try:
                     tts.speak_streaming(
                         iter(sentences),
-                        speaker_id=settings.default_speaker_id,
+                        speaker_id=speaker_state["id"],
                     )
                 except Exception:
                     pass
@@ -204,7 +229,7 @@ def create_app() -> gr.Blocks:
                 try:
                     tts.speak_streaming(
                         iter(sentences),
-                        speaker_id=settings.default_speaker_id,
+                        speaker_id=speaker_state["id"],
                     )
                 except Exception:
                     pass
@@ -214,6 +239,16 @@ def create_app() -> gr.Blocks:
             tts_status = "VOICEVOX未起動（テキストのみ）"
 
         return history, tts_status, f"LLM: {llm.model_name}"
+
+    def change_speaker(selected: str) -> str:
+        """キャラクターを変更する."""
+        sid = speaker_id_map.get(selected, settings.default_speaker_id)
+        speaker_state["id"] = sid
+        # 表示名からキャラ名を抽出（「ずんだもん（ノーマル）」→「ずんだもん」）
+        char_name = selected.split("（")[0] if "（" in selected else selected
+        conv_logger.set_character(char_name)
+        logger.info("キャラクター変更: %s (id=%d)", char_name, sid)
+        return f"キャラ: {char_name}"
 
     # モード名 → プロンプトファイル名のマッピング
     mode_map: dict[str, str] = {
@@ -280,6 +315,12 @@ def create_app() -> gr.Blocks:
                     value="雑談",
                     label="会話モード",
                 )
+                speaker_dropdown = gr.Dropdown(
+                    choices=speaker_choices,
+                    value=default_speaker_label,
+                    label="キャラクター",
+                    interactive=voicevox_available,
+                )
                 mic_status = gr.Textbox(
                     label="マイク",
                     value="待機中",
@@ -342,6 +383,13 @@ def create_app() -> gr.Blocks:
             fn=change_mode,
             inputs=[mode_radio, chatbot],
             outputs=[chatbot, status_display, llm_info],
+        )
+
+        # キャラクター切替
+        speaker_dropdown.change(
+            fn=change_speaker,
+            inputs=[speaker_dropdown],
+            outputs=[status_display],
         )
 
     return app
