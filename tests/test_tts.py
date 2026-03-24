@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import io
 import struct
+import time
 import wave
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import requests
@@ -159,3 +160,97 @@ class TestVoicevoxTTS:
 
             first_call = mock_post.call_args_list[0]
             assert "http://custom:9999" in first_call.args[0]
+
+
+class TestSpeakStreaming:
+    """speak_streaming のテスト."""
+
+    @pytest.mark.unit
+    def test_streaming_plays_in_order(self) -> None:
+        """複数文が順序通りに再生される."""
+        tts = VoicevoxTTS()
+        wav1 = _make_wav_bytes(n_samples=50)
+        wav2 = _make_wav_bytes(n_samples=100)
+        wav3 = _make_wav_bytes(n_samples=150)
+
+        play_order: list[int] = []
+
+        with (
+            patch.object(
+                tts, "synthesize", side_effect=[wav1, wav2, wav3],
+            ) as mock_synth,
+            patch.object(
+                tts,
+                "play_audio",
+                side_effect=lambda wav: play_order.append(len(wav)),
+            ),
+        ):
+            sentences = iter(["一番目の文。", "二番目の文。", "三番目の文。"])
+            tts.speak_streaming(sentences, speaker_id=3)
+
+            assert mock_synth.call_count == 3
+            assert play_order == [len(wav1), len(wav2), len(wav3)]
+
+    @pytest.mark.unit
+    def test_streaming_skips_empty(self) -> None:
+        """空文字列やスペースのみの文はスキップされる."""
+        tts = VoicevoxTTS()
+        wav = _make_wav_bytes()
+
+        with (
+            patch.object(tts, "synthesize", return_value=wav) as mock_synth,
+            patch.object(tts, "play_audio"),
+        ):
+            sentences = iter(["有効な文。", "", "  ", "もう一文。"])
+            tts.speak_streaming(sentences, speaker_id=3)
+
+            assert mock_synth.call_count == 2
+
+    @pytest.mark.unit
+    def test_streaming_synthesis_error_continues(self) -> None:
+        """合成失敗しても次の文の再生は継続する."""
+        tts = VoicevoxTTS()
+        wav_ok = _make_wav_bytes()
+
+        with (
+            patch.object(
+                tts,
+                "synthesize",
+                side_effect=[wav_ok, RuntimeError("合成失敗"), wav_ok],
+            ),
+            patch.object(tts, "play_audio") as mock_play,
+        ):
+            sentences = iter(["成功。", "失敗。", "成功。"])
+            tts.speak_streaming(sentences, speaker_id=3)
+
+            # 失敗分を除いて2回再生
+            assert mock_play.call_count == 2
+
+    @pytest.mark.unit
+    def test_streaming_single_sentence(self) -> None:
+        """単一文でも正常に動作する."""
+        tts = VoicevoxTTS()
+        wav = _make_wav_bytes()
+
+        with (
+            patch.object(tts, "synthesize", return_value=wav) as mock_synth,
+            patch.object(tts, "play_audio") as mock_play,
+        ):
+            tts.speak_streaming(iter(["一文だけ。"]), speaker_id=2)
+
+            mock_synth.assert_called_once_with("一文だけ。", 2)
+            mock_play.assert_called_once_with(wav)
+
+    @pytest.mark.unit
+    def test_streaming_empty_iterator(self) -> None:
+        """空のイテレータでもエラーにならない."""
+        tts = VoicevoxTTS()
+
+        with (
+            patch.object(tts, "synthesize") as mock_synth,
+            patch.object(tts, "play_audio") as mock_play,
+        ):
+            tts.speak_streaming(iter([]), speaker_id=3)
+
+            mock_synth.assert_not_called()
+            mock_play.assert_not_called()

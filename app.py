@@ -89,22 +89,27 @@ def create_app() -> gr.Blocks:
         # ユーザーメッセージを履歴に追加
         history.append({"role": "user", "content": text})
 
-        # LLM応答生成
+        # LLM応答生成（ストリーミング → 文単位で収集）
         try:
-            response: str = llm.generate(text)
+            sentences: list[str] = list(llm.generate_stream(text))
+            response: str = "".join(sentences)
         except Exception as e:
             response = f"エラーが発生したのだ: {e}"
+            sentences = []
 
         history.append({"role": "assistant", "content": response})
 
-        # TTS再生（バックグラウンド）
+        # TTS再生（バックグラウンド・文単位並列合成）
         tts_status: str = "応答完了"
-        if voicevox_available:
+        if voicevox_available and sentences:
             tts_status = "音声合成中..."
 
             def _speak() -> None:
                 try:
-                    tts.speak(response, speaker_id=settings.default_speaker_id)
+                    tts.speak_streaming(
+                        iter(sentences),
+                        speaker_id=settings.default_speaker_id,
+                    )
                 except Exception:
                     pass
 
@@ -122,26 +127,32 @@ def create_app() -> gr.Blocks:
 
         history.append({"role": "user", "content": message})
 
+        # LLM応答生成（ストリーミング → 文単位で収集）
         try:
-            response: str = llm.generate(message)
+            sentences: list[str] = list(llm.generate_stream(message))
+            response: str = "".join(sentences)
         except Exception as e:
             response = f"エラーが発生したのだ: {e}"
+            sentences = []
 
         history.append({"role": "assistant", "content": response})
 
-        # TTS再生（バックグラウンド）
+        # TTS再生（バックグラウンド・文単位並列合成）
         tts_status: str = ""
-        if voicevox_available:
+        if voicevox_available and sentences:
             tts_status = "音声合成中..."
 
             def _speak() -> None:
                 try:
-                    tts.speak(response, speaker_id=settings.default_speaker_id)
+                    tts.speak_streaming(
+                        iter(sentences),
+                        speaker_id=settings.default_speaker_id,
+                    )
                 except Exception:
                     pass
 
             threading.Thread(target=_speak, daemon=True).start()
-        else:
+        elif not voicevox_available:
             tts_status = "VOICEVOX未起動（テキストのみ）"
 
         return history, tts_status, f"LLM: {llm.model_name}"
