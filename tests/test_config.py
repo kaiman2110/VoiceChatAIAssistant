@@ -17,7 +17,7 @@ class TestSettings:
         monkeypatch.delenv("WHISPER_MODEL", raising=False)
         monkeypatch.delenv("WAKEWORD_MODEL", raising=False)
 
-        s = Settings()
+        s = Settings(_env_file=None)
 
         assert s.gemini_api_key == ""
         assert s.voicevox_host == "http://localhost:50021"

@@ -1,5 +1,5 @@
 # UI
-gradio>=4.0,<5.0
+gradio>=5.0
 
 # 設定管理
 pydantic>=2.0,<3.0
@@ -14,7 +14,7 @@ silero-vad>=5.0,<6.0
 
 # マイク入力・音声再生
 sounddevice>=0.4,<1.0
-numpy>=1.24,<3.0
+numpy>=2.1
 
 # LLM
 google-genai>=1.0,<2.0
