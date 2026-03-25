@@ -553,3 +553,180 @@ class TestLLMManager:
 
         call_kwargs = mock_client.models.generate_content.call_args
         assert call_kwargs.kwargs["config"]["system_instruction"] == "カスタム"
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_available_providers_with_gemini(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """APIキーあり時は gemini と ollama が利用可能."""
+        mock_client_cls.return_value = MagicMock()
+        manager = LLMManager(settings)
+        assert "gemini" in manager.available_providers
+        assert "ollama" in manager.available_providers
+
+    @pytest.mark.unit
+    def test_available_providers_without_gemini(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """APIキーなし時は ollama のみ利用可能."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        s = Settings(_env_file=None)
+        manager = LLMManager(s)
+        assert manager.available_providers == ["ollama"]
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_active_provider_gemini(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """APIキーあり時はアクティブプロバイダが gemini."""
+        mock_client_cls.return_value = MagicMock()
+        manager = LLMManager(settings)
+        assert manager.active_provider == "gemini"
+
+    @pytest.mark.unit
+    def test_active_provider_ollama(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """APIキーなし時はアクティブプロバイダが ollama."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        s = Settings(_env_file=None)
+        manager = LLMManager(s)
+        assert manager.active_provider == "ollama"
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_switch_provider_gemini_to_ollama(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """Gemini から Ollama への切替が正常に動作する."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Geminiの応答"
+        mock_client.models.generate_content.return_value = mock_response
+
+        manager = LLMManager(settings)
+        manager.generate("テストメッセージ")
+        assert manager.active_provider == "gemini"
+
+        manager.switch_provider("ollama")
+        assert manager.active_provider == "ollama"
+        assert manager.model_name == "ollama/gemma3"
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_switch_provider_preserves_history(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """切替時に会話履歴が引き継がれる."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "Geminiの応答"
+        mock_client.models.generate_content.return_value = mock_response
+
+        manager = LLMManager(settings)
+        manager.generate("こんにちは")
+
+        # 切替前の履歴数を確認
+        assert len(manager.history._messages) == 2
+
+        manager.switch_provider("ollama")
+
+        # 切替後も履歴が引き継がれている
+        messages = manager.history._messages
+        assert len(messages) == 2
+        assert messages[0]["parts"][0]["text"] == "こんにちは"
+        assert messages[1]["parts"][0]["text"] == "Geminiの応答"
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_switch_provider_preserves_summary(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """切替時に要約が引き継がれる."""
+        mock_client_cls.return_value = MagicMock()
+        manager = LLMManager(settings)
+
+        # Gemini 側の履歴に要約を手動設定
+        manager.history._summary = "これまでの要約テスト"
+
+        manager.switch_provider("ollama")
+        assert manager.history.summary == "これまでの要約テスト"
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_switch_provider_preserves_system_prompt(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """切替時にシステムプロンプトが引き継がれる."""
+        mock_client_cls.return_value = MagicMock()
+        manager = LLMManager(settings)
+        manager.set_system_prompt("カスタムプロンプト")
+
+        manager.switch_provider("ollama")
+        assert manager._ollama._system_prompt == "カスタムプロンプト"
+
+    @pytest.mark.unit
+    @patch("core.llm.requests.post")
+    @patch("core.llm.genai.Client")
+    def test_switch_provider_ollama_to_gemini(
+        self,
+        mock_client_cls: MagicMock,
+        mock_post: MagicMock,
+        settings: Settings,
+    ) -> None:
+        """Ollama から Gemini への切替が正常に動作する."""
+        mock_client_cls.return_value = MagicMock()
+
+        # Ollama 応答
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "message": {"content": "Ollamaの応答"},
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        manager = LLMManager(settings)
+        manager.switch_provider("ollama")
+        manager.generate("テスト")
+
+        manager.switch_provider("gemini")
+        assert manager.active_provider == "gemini"
+        # 履歴が引き継がれている
+        assert len(manager.history._messages) == 2
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_switch_to_same_provider_noop(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """同じプロバイダへの切替は何もしない."""
+        mock_client_cls.return_value = MagicMock()
+        manager = LLMManager(settings)
+        manager.switch_provider("gemini")
+        assert manager.active_provider == "gemini"
+
+    @pytest.mark.unit
+    @patch("core.llm.genai.Client")
+    def test_switch_to_unknown_provider_raises(
+        self, mock_client_cls: MagicMock, settings: Settings
+    ) -> None:
+        """不明なプロバイダ名で ValueError が発生する."""
+        mock_client_cls.return_value = MagicMock()
+        manager = LLMManager(settings)
+        with pytest.raises(ValueError, match="不明なプロバイダ"):
+            manager.switch_provider("unknown")
+
+    @pytest.mark.unit
+    def test_switch_to_gemini_without_api_key_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """APIキー未設定で gemini に切替しようとすると ValueError."""
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        s = Settings(_env_file=None)
+        manager = LLMManager(s)
+        with pytest.raises(ValueError, match="Gemini は利用不可"):
+            manager.switch_provider("gemini")
