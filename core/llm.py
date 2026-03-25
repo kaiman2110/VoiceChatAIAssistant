@@ -314,7 +314,7 @@ class OllamaClient:
 
 
 class LLMManager:
-    """LLMクライアント管理（Gemini優先、Ollama自動フォールバック）."""
+    """LLMクライアント管理（Gemini優先、Ollama自動フォールバック、手動切替対応）."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings: Settings = settings
@@ -322,13 +322,18 @@ class LLMManager:
         self._ollama: OllamaClient | None = None
         self._active: GeminiClient | OllamaClient
 
-        # Gemini API キーがあれば Gemini を優先
+        # 両プロバイダを初期化（利用可能なもの）
         if settings.gemini_api_key:
             self._gemini = GeminiClient(settings)
+        else:
+            logger.warning("Gemini APIキー未設定")
+
+        self._ollama = OllamaClient(settings)
+
+        # Gemini があれば優先、なければ Ollama
+        if self._gemini:
             self._active = self._gemini
         else:
-            logger.warning("Gemini APIキー未設定 → Ollamaを使用")
-            self._ollama = OllamaClient(settings)
             self._active = self._ollama
 
         # 要約コールバックを設定
@@ -343,6 +348,81 @@ class LLMManager:
     def model_name(self) -> str:
         """現在使用中のモデル名を返す."""
         return self._active.model_name
+
+    @property
+    def active_provider(self) -> str:
+        """現在アクティブなプロバイダ名を返す."""
+        if isinstance(self._active, GeminiClient):
+            return "gemini"
+        return "ollama"
+
+    @property
+    def available_providers(self) -> list[str]:
+        """利用可能なプロバイダ名一覧を返す."""
+        providers: list[str] = []
+        if self._gemini is not None:
+            providers.append("gemini")
+        if self._ollama is not None:
+            providers.append("ollama")
+        return providers
+
+    def switch_provider(self, provider_name: str) -> None:
+        """プロバイダを手動切替する。会話履歴は新プロバイダへ引き継ぐ.
+
+        Args:
+            provider_name: "gemini" または "ollama"
+
+        Raises:
+            ValueError: 不明なプロバイダ名または利用不可の場合
+        """
+        provider_name = provider_name.lower()
+
+        if provider_name == self.active_provider:
+            logger.info("既に %s を使用中", provider_name)
+            return
+
+        target = self._resolve_provider(provider_name)
+        source = self._active
+
+        # 履歴を引き継ぐ
+        self._transfer_history(source, target)
+
+        self._active = target
+        self._active.history.set_summarizer(self._summarize)
+        logger.info("プロバイダを %s に切替", provider_name)
+
+    def _resolve_provider(
+        self, provider_name: str
+    ) -> GeminiClient | OllamaClient:
+        """プロバイダ名からクライアントインスタンスを解決する."""
+        if provider_name == "gemini":
+            if self._gemini is None:
+                raise ValueError("Gemini は利用不可（APIキー未設定）")
+            return self._gemini
+        if provider_name == "ollama":
+            if self._ollama is None:
+                raise ValueError("Ollama は利用不可")
+            return self._ollama
+        raise ValueError(f"不明なプロバイダ: {provider_name}")
+
+    @staticmethod
+    def _transfer_history(
+        source: GeminiClient | OllamaClient,
+        target: GeminiClient | OllamaClient,
+    ) -> None:
+        """履歴とシステムプロンプトを source から target へ引き継ぐ."""
+        target.history.clear()
+        # 要約を引き継ぐ
+        target.history._summary = source.history._summary
+        # メッセージを引き継ぐ
+        for msg in source.history._messages:
+            text = msg["parts"][0]["text"]
+            if msg["role"] == "user":
+                target.history.add_user(text)
+            else:
+                target.history.add_assistant(text)
+        # システムプロンプトを引き継ぐ
+        target.set_system_prompt(source._system_prompt)
 
     def set_system_prompt(self, prompt: str) -> None:
         """全クライアントのシステムプロンプトを設定."""
@@ -385,21 +465,12 @@ class LLMManager:
         if not isinstance(self._active, GeminiClient):
             return None
 
+        if self._ollama is None:
+            return None
+
         logger.warning("Geminiエラー: %s → Ollamaへフォールバック", error)
 
-        if self._ollama is None:
-            self._ollama = OllamaClient(self._settings)
-            # Gemini の履歴を引き継ぐ
-            if self._gemini:
-                for msg in self._gemini.history.messages:
-                    text = msg["parts"][0]["text"]
-                    if msg["role"] == "user":
-                        self._ollama.history.add_user(text)
-                    else:
-                        self._ollama.history.add_assistant(text)
-                # システムプロンプトも引き継ぐ
-                self._ollama.set_system_prompt(self._gemini._system_prompt)
-
+        self._transfer_history(self._active, self._ollama)
         self._active = self._ollama
         self._ollama.history.set_summarizer(self._summarize)
         return self._ollama
