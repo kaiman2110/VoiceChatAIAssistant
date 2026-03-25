@@ -28,17 +28,49 @@ def _load_prompt(filename: str) -> str:
 class ChatHistory:
     """会話履歴を管理するクラス.
 
-    直近 max_turns 往復を保持し、超過分は切り捨てる。
+    直近 max_turns 往復を保持し、超過分は要約圧縮する。
+    要約コールバックが未設定の場合は単純に切り捨てる。
     """
 
-    def __init__(self, max_turns: int = 10) -> None:
+    SUMMARY_PROMPT: str = (
+        "以下の会話を3〜5文で簡潔に要約してください。"
+        "重要なトピックと結論のみを残してください:\n\n"
+    )
+
+    def __init__(self, max_turns: int = 20) -> None:
         self._max_turns: int = max_turns
         self._messages: list[dict[str, str]] = []
+        self._summary: str = ""
+        self._summarizer: Any = None
 
     @property
     def messages(self) -> list[dict[str, str]]:
-        """現在の会話履歴を返す."""
-        return list(self._messages)
+        """現在の会話履歴を返す（要約があれば先頭に含む）."""
+        result: list[dict[str, str]] = []
+        if self._summary:
+            result.append({
+                "role": "user",
+                "parts": [{"text": f"[これまでの会話の要約]: {self._summary}"}],
+            })
+            result.append({
+                "role": "model",
+                "parts": [{"text": "了解なのだ。要約の内容を踏まえて会話を続けるのだ。"}],
+            })
+        result.extend(self._messages)
+        return result
+
+    @property
+    def summary(self) -> str:
+        """現在の要約を返す."""
+        return self._summary
+
+    def set_summarizer(self, callback: Any) -> None:
+        """要約コールバックを設定.
+
+        Args:
+            callback: テキストを受け取り要約テキストを返す callable。
+        """
+        self._summarizer = callback
 
     def add_user(self, message: str) -> None:
         """ユーザーメッセージを追加."""
@@ -53,12 +85,42 @@ class ChatHistory:
     def clear(self) -> None:
         """履歴をクリア."""
         self._messages.clear()
+        self._summary = ""
 
     def _trim(self) -> None:
-        """最大往復数を超えた古い履歴を切り捨てる."""
+        """最大往復数を超えた古い履歴を圧縮する."""
         max_messages = self._max_turns * 2
-        if len(self._messages) > max_messages:
-            self._messages = self._messages[-max_messages:]
+        if len(self._messages) <= max_messages:
+            return
+
+        # 超過分を取得
+        overflow = self._messages[:-max_messages]
+        self._messages = self._messages[-max_messages:]
+
+        # 要約コールバックがあれば要約を生成
+        if self._summarizer is not None:
+            overflow_text = self._format_for_summary(overflow)
+            try:
+                new_summary = self._summarizer(
+                    self.SUMMARY_PROMPT + overflow_text,
+                )
+                if self._summary:
+                    self._summary = f"{self._summary}\n{new_summary}"
+                else:
+                    self._summary = new_summary
+                logger.info("会話履歴を要約圧縮しました")
+            except Exception as e:
+                logger.warning("要約生成に失敗: %s", e)
+
+    @staticmethod
+    def _format_for_summary(messages: list[dict[str, str]]) -> str:
+        """メッセージリストを要約用テキストに変換."""
+        lines: list[str] = []
+        for msg in messages:
+            role = "ユーザー" if msg["role"] == "user" else "AI"
+            text = msg["parts"][0]["text"]
+            lines.append(f"{role}: {text}")
+        return "\n".join(lines)
 
 
 class GeminiClient:
@@ -269,6 +331,9 @@ class LLMManager:
             self._ollama = OllamaClient(settings)
             self._active = self._ollama
 
+        # 要約コールバックを設定
+        self._active.history.set_summarizer(self._summarize)
+
     @property
     def history(self) -> ChatHistory:
         """現在アクティブなクライアントの会話履歴を返す."""
@@ -336,4 +401,9 @@ class LLMManager:
                 self._ollama.set_system_prompt(self._gemini._system_prompt)
 
         self._active = self._ollama
+        self._ollama.history.set_summarizer(self._summarize)
         return self._ollama
+
+    def _summarize(self, text: str) -> str:
+        """要約テキストを生成する（内部用）."""
+        return self._active.generate(text)

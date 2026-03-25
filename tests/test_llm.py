@@ -87,6 +87,78 @@ class TestChatHistory:
         # 元の履歴は変わらない
         assert len(history.messages) == 1
 
+    @pytest.mark.unit
+    def test_summary_compression(self) -> None:
+        """超過分が要約コールバックで圧縮される."""
+        history = ChatHistory(max_turns=2)
+        history.set_summarizer(lambda text: "要約テスト")
+
+        # 3往復追加（max_turnsは2）
+        for i in range(3):
+            history.add_user(f"ユーザー{i}")
+            history.add_assistant(f"アシスタント{i}")
+
+        # 要約が生成されている
+        assert "要約テスト" in history.summary
+        # messages の先頭に要約が含まれる（要約2 + 直近4 = 6）
+        msgs = history.messages
+        assert len(msgs) == 6
+        assert "[これまでの会話の要約]" in msgs[0]["parts"][0]["text"]
+
+    @pytest.mark.unit
+    def test_summary_accumulates(self) -> None:
+        """複数回の圧縮で要約が蓄積される."""
+        history = ChatHistory(max_turns=2)
+        history.set_summarizer(lambda text: "要約")
+
+        # 5往復追加（2回の圧縮が発生）
+        for i in range(5):
+            history.add_user(f"ユーザー{i}")
+            history.add_assistant(f"アシスタント{i}")
+
+        assert "要約" in history.summary
+
+    @pytest.mark.unit
+    def test_no_summarizer_trims_silently(self) -> None:
+        """要約コールバック未設定時は単純に切り捨てる."""
+        history = ChatHistory(max_turns=2)
+
+        for i in range(3):
+            history.add_user(f"ユーザー{i}")
+            history.add_assistant(f"アシスタント{i}")
+
+        assert history.summary == ""
+        # 要約なしなので直近4メッセージのみ
+        assert len(history.messages) == 4
+
+    @pytest.mark.unit
+    def test_clear_resets_summary(self) -> None:
+        """clear で要約もリセットされる."""
+        history = ChatHistory(max_turns=2)
+        history.set_summarizer(lambda text: "要約")
+
+        for i in range(3):
+            history.add_user(f"ユーザー{i}")
+            history.add_assistant(f"アシスタント{i}")
+
+        history.clear()
+        assert history.summary == ""
+        assert len(history.messages) == 0
+
+    @pytest.mark.unit
+    def test_summarizer_error_handled(self) -> None:
+        """要約コールバックのエラーは握りつぶされる."""
+        history = ChatHistory(max_turns=2)
+        history.set_summarizer(lambda text: (_ for _ in ()).throw(Exception("失敗")))
+
+        # エラーが発生してもクラッシュしない
+        for i in range(3):
+            history.add_user(f"ユーザー{i}")
+            history.add_assistant(f"アシスタント{i}")
+
+        assert history.summary == ""
+        assert len(history.messages) == 4
+
 
 class TestGeminiClient:
     """GeminiClient クラスのテスト."""
